@@ -1,20 +1,5 @@
 #!/usr/bin/env python3
-# Author: MUI group 3
-"""
-Bakes the Blender cloud models into sprite data + textures for RealityKit.
 
-RealityKit cannot render OpenVDB volumes, so the volumetric look is rebuilt from
-soft, camera-facing sprites. This script
-  1. reads the metaball meshes (the source shapes of the VDB volumes) from the USD exports,
-  2. fills them with sprites, bakes self-shadowing / light scattering per sprite,
-  3. pairs every start sprite with an end sprite (optimal assignment) so the app can
-     morph the start cloud organically into the anvil,
-  4. writes cloud_morph.json and the puff / wind / sun textures into ../MUI_Lightning_Group_3/Resources.
-
-Re-run whenever the Blender models change:
-    pip install usd-core trimesh scipy rtree pillow numpy
-    python3 Tools/bake_clouds.py path/to/clouds_mui
-"""
 import json, math, os, sys
 import numpy as np
 import trimesh
