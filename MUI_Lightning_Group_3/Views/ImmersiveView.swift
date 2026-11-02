@@ -6,13 +6,11 @@
 //
 
 import SwiftUI
+import Spatial
 import RealityKit
 
 enum AttachmentID {
-    static let stop = "stop"
-    static let hint = "hint"
-    static let infographic = "infographic"
-    static let afterStrike = "afterStrike"
+    static let dashboard = "dashboard"
 }
 
 struct ImmersiveView: View {
@@ -22,23 +20,23 @@ struct ImmersiveView: View {
     @State private var updateSubscription: EventSubscription?
 
     var body: some View {
-        let phase = appModel.phase
-        let focus = appModel.infographic
-
         RealityView { content, attachments in
             let scene = appModel.scene
             scene.build(showVirtualLandscape: appModel.showVirtualLandscape)
             content.add(scene.root)
 
-            if let stop = attachments.entity(for: AttachmentID.stop),
-               let hint = attachments.entity(for: AttachmentID.hint) {
-                scene.attachHeadLocked(stop: stop, hint: hint)
+            if let dashboard = attachments.entity(for: AttachmentID.dashboard) {
+                scene.attachDashboard(dashboard)
             }
-            if let info = attachments.entity(for: AttachmentID.infographic) {
-                scene.attachInfographic(info)
+            for slot in 0..<ChargedCloudField.slotCount {
+                if let badge = attachments.entity(for: "charge-\(slot)") {
+                    scene.attachBadge(slot: slot, badge)
+                }
             }
-            if let after = attachments.entity(for: AttachmentID.afterStrike) {
-                scene.attachAfterStrike(after)
+            for label in InfoLabel.allCases {
+                if let view = attachments.entity(for: label.id) {
+                    scene.attachLabel(label, view: view)
+                }
             }
 
             updateSubscription = content.subscribe(to: SceneEvents.Update.self) { event in
@@ -47,31 +45,29 @@ struct ImmersiveView: View {
                 }
             }
 
-            appModel.startExperience()
-        } update: { _, _ in
-            appModel.scene.setUI(infographicVisible: focus != .hidden,
-                                 afterStrikeVisible: phase == .afterStrike)
         } attachments: {
-            Attachment(id: AttachmentID.stop) {
-                StopButtonView(onStop: stop)
-            }
-            Attachment(id: AttachmentID.hint) {
-                HintView().environment(appModel)
-            }
-            Attachment(id: AttachmentID.infographic) {
-                InfographicView().environment(appModel)
-            }
-            Attachment(id: AttachmentID.afterStrike) {
-                AfterStrikeView(onAgain: { appModel.director.buildAnother() }, onFinish: finish)
+            Attachment(id: AttachmentID.dashboard) {
+                DashboardView(onAgain: { appModel.director.buildAnother() }, onFinish: finish)
                     .environment(appModel)
             }
+            ForEach(0..<ChargedCloudField.slotCount, id: \.self) { slot in
+                Attachment(id: "charge-\(slot)") {
+                    ChargeBadgeView(slot: slot).environment(appModel)
+                }
+            }
+            ForEach(InfoLabel.allCases) { label in
+                Attachment(id: label.id) {
+                    InfoLabelView(label: label)
+                }
+            }
         }
-        // Drag is the primary interaction; tap is recognised alongside it
-        // (a real drag never counts as a tap, a tap never starts a drag).
+        // One drag gesture for everything draggable (sun and charged clouds),
+        // tap recognised alongside it for the charged clouds.
         .gesture(dragGesture)
         .simultaneousGesture(tapGesture)
+        .simultaneousGesture(rotateGesture)
         .task {
-            await appModel.scene.head.start()
+            await appModel.beginSession()
         }
     }
 
@@ -79,14 +75,41 @@ struct ImmersiveView: View {
 
     private var dragGesture: some Gesture {
         DragGesture(minimumDistance: 5)
-            .targetedToEntity(where: .has(ChargeComponent.self))
+            .targetedToAnyEntity()
             .onChanged { value in
                 let location = value.convert(value.location3D, from: .local, to: .scene)
-                let start = value.convert(value.startLocation3D, from: .local, to: .scene)
-                appModel.scene.charged?.drag(value.entity, to: location, start: start)
+                if value.entity.components.has(PlacementComponent.self) {
+                    let start = value.convert(value.startLocation3D, from: .local, to: .scene)
+                    appModel.scene.dragModel(to: location, start: start)
+                } else if value.entity.components.has(SunComponent.self) {
+                    appModel.scene.dragSun(to: location)
+                } else {
+                    let start = value.convert(value.startLocation3D, from: .local, to: .scene)
+                    appModel.scene.charged?.drag(value.entity, to: location, start: start)
+                }
             }
             .onEnded { value in
-                appModel.scene.charged?.endDrag(value.entity)
+                if value.entity.components.has(PlacementComponent.self) {
+                    appModel.scene.endModelDrag()
+                } else if value.entity.components.has(SunComponent.self) {
+                    appModel.scene.endSunDrag()
+                } else {
+                    appModel.scene.charged?.endDrag(value.entity)
+                }
+            }
+    }
+
+    /// Placing the model: turn the see-through landscape with both hands (around the vertical).
+    private var rotateGesture: some Gesture {
+        RotateGesture3D(constrainedToAxis: .y)
+            .targetedToEntity(where: .has(PlacementComponent.self))
+            .onChanged { value in
+                let q = value.rotation.quaternion
+                let yaw = 2 * atan2(Float(q.imag.y), Float(q.real))
+                appModel.scene.rotateModel(by: yaw)
+            }
+            .onEnded { _ in
+                appModel.scene.endModelRotate()
             }
     }
 
@@ -100,7 +123,7 @@ struct ImmersiveView: View {
 
     // MARK: - Exit
 
-    private func stop() {
+    private func end() {
         guard appModel.immersiveSpaceState == .open else { return }
         appModel.immersiveSpaceState = .inTransition
         Task { @MainActor in
@@ -110,9 +133,13 @@ struct ImmersiveView: View {
         }
     }
 
+    /// "Finish" (after a storm) and "End" (while paused): a calm ending, then close.
     private func finish() {
+        guard appModel.phase != .ending else { return }
+        appModel.resume()
         Task { @MainActor in
-            stop()
+            await appModel.director.playEnding()
+            end()
         }
     }
 }

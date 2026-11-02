@@ -13,8 +13,6 @@ struct StartView: View {
     @Environment(\.dismissWindow) private var dismissWindow
 
     var body: some View {
-        @Bindable var model = appModel
-
         VStack(spacing: 28) {
             Image(systemName: "cloud.bolt.rain.fill")
                 .font(.system(size: 72))
@@ -29,25 +27,56 @@ struct StartView: View {
                     .multilineTextAlignment(.center)
             }
 
-            VStack(alignment: .leading, spacing: 12) {
-                Toggle("Show virtual landscape (simulator, or without the physical model)", isOn: $model.showVirtualLandscape)
-            }
-            .frame(width: 540)
+            Text("How do you want to start?")
+                .font(.title2.weight(.semibold))
+                .padding(.top, 8)
 
-            Button {
-                Task { await start() }
-            } label: {
-                Label("Start", systemImage: "play.fill")
-                    .font(.title2)
-                    .padding(.horizontal, 24)
-                    .padding(.vertical, 8)
+            HStack(spacing: 20) {
+                choice(title: "With the physical model",
+                       detail: "The landscape stands on the table in front of you.",
+                       symbol: "cube.fill", virtual: false)
+                choice(title: "Virtual landscape",
+                       detail: "No model? The landscape is shown in the room.",
+                       symbol: "mountain.2.fill", virtual: true)
             }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.extraLarge)
-            .disabled(appModel.immersiveSpaceState != .closed)
+
+            if HeadLockedFollower.hasSavedModel {
+                Button {
+                    appModel.forcePlacement = true
+                    appModel.showVirtualLandscape = false
+                    Task { await start() }
+                } label: {
+                    Label("Model moved? Place it again", systemImage: "scope")
+                }
+                .buttonStyle(.borderless)
+                .disabled(appModel.immersiveSpaceState != .closed)
+            }
         }
         .padding(56)
         .frame(width: 760)
+    }
+
+    private func choice(title: String, detail: String, symbol: String, virtual: Bool) -> some View {
+        Button {
+            appModel.showVirtualLandscape = virtual
+            Task { await start() }
+        } label: {
+            VStack(spacing: 12) {
+                Image(systemName: symbol)
+                    .font(.system(size: 40))
+                Text(title)
+                    .font(.title3.weight(.semibold))
+                Text(detail)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(width: 250, height: 190)
+        }
+        .buttonStyle(.bordered)
+        .buttonBorderShape(.roundedRectangle(radius: 24))
+        .disabled(appModel.immersiveSpaceState != .closed)
     }
 
     private func start() async {

@@ -79,7 +79,7 @@ final class WindRibbons {
     }
 
     func update(state: AtmosphereState, time: Float, dt: Float, camera: SIMD3<Float>) {
-        let opacity = 0.55 * state.wind
+        let opacity = 0.55 * state.windVisible
         entity.isEnabled = opacity > 0.01
         guard entity.isEnabled else { return }
         let key = Int32(opacity * 100)

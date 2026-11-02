@@ -29,6 +29,20 @@ enum Materials {
         return material
     }
 
+    /// Glassy, lit bubble: translucent body, clear-coat highlight, soft inner glow.
+    static func bubble(_ color: UIColor, opacity: Float, glow: Float) -> PhysicallyBasedMaterial {
+        var material = PhysicallyBasedMaterial()
+        material.baseColor = .init(tint: color)
+        material.roughness = .init(floatLiteral: 0.12)
+        material.metallic = .init(floatLiteral: 0)
+        material.clearcoat = .init(floatLiteral: 1)
+        material.clearcoatRoughness = .init(floatLiteral: 0.04)
+        material.emissiveColor = .init(color: color)
+        material.emissiveIntensity = glow
+        material.blending = .transparent(opacity: .init(floatLiteral: opacity))
+        return material
+    }
+
     /// White fair-weather cloud → dark blue-grey storm cloud.
     static func cloud(brightness b: Float, storm s: Float) -> PhysicallyBasedMaterial {
         let color = UIColor(red: CGFloat(b * (1 - 0.07 * s)),

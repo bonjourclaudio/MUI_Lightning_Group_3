@@ -25,6 +25,9 @@ struct Sprite {
 final class SpriteBatch {
     let entity = ModelEntity()
     let capacity: Int
+    /// Each sprite turns to the camera on its own (needed when sprites surround the viewer,
+    /// e.g. the overcast layer). Default: one shared facing for a compact cloud (cheaper).
+    var perSpriteFacing = false
 
     static let columns = 16
     static let rows = 4
@@ -41,6 +44,10 @@ final class SpriteBatch {
     private static let indicesPerSprite = 18
     private var order: [Int]
     private var depth: [Float]
+    /// Re-sorting thousands of sprites every frame is the most expensive part. The order only
+    /// changes noticeably when the viewer moves, so sort when the camera has moved, or every few frames.
+    private var lastSortCamera = SIMD3<Float>(repeating: .greatestFiniteMagnitude)
+    private var framesSinceSort = 0
 
     private struct Vertex {
         var px: Float, py: Float, pz: Float
@@ -93,7 +100,9 @@ final class SpriteBatch {
         let du = 1 / Float(Self.columns)
         let dv = 1 / Float(Self.rows)
         let capacity = self.capacity
+        let perSpriteFacing = self.perSpriteFacing
         var newDepth = depth
+        depth = []          // hand over the buffer (no copy-on-write duplicate)
 
         mesh.withUnsafeMutableBytes(bufferIndex: 0) { raw in
             let vertices = raw.bindMemory(to: Vertex.self)
@@ -106,9 +115,22 @@ final class SpriteBatch {
                     continue
                 }
                 let s = sprites[i]
+                var faceForward = forward, faceRight = right, faceUp = up
+                if perSpriteFacing {
+                    let toCamera = camera - s.position
+                    let l = simd_length(toCamera)
+                    if l > 1e-4 {
+                        faceForward = toCamera / l
+                        var r = simd_cross(SIMD3<Float>(0, 1, 0), faceForward)
+                        let rl2 = simd_length(r)
+                        r = rl2 > 1e-4 ? r / rl2 : SIMD3<Float>(1, 0, 0)
+                        faceRight = r
+                        faceUp = simd_cross(faceForward, r)
+                    }
+                }
                 let c = cosf(s.rotation), sn = sinf(s.rotation)
-                let rx = (right * c + up * sn) * s.radius
-                let uy = (up * c - right * sn) * s.radius
+                let rx = (faceRight * c + faceUp * sn) * s.radius
+                let uy = (faceUp * c - faceRight * sn) * s.radius
                 let column = Float(max(0, min(Self.columns - 1, Int((s.shade * Float(Self.columns - 1)).rounded()))))
                 let row = Float(((s.variant % Self.rows) + Self.rows) % Self.rows)
                 let u0 = (column + 0.03) * du, u1 = (column + 0.97) * du
@@ -120,16 +142,21 @@ final class SpriteBatch {
                     let u = u0 + (corner.x * 0.5 + 0.5) * (u1 - u0)
                     let v = v1 - (corner.y * 0.5 + 0.5) * (v1 - v0)
                     vertices[base + k] = Vertex(px: q.x, py: q.y, pz: q.z,
-                                                nx: forward.x, ny: forward.y, nz: forward.z, u: u, v: v)
+                                                nx: faceForward.x, ny: faceForward.y, nz: faceForward.z, u: u, v: v)
                 }
                 newDepth[i] = simd_distance_squared(p, camera)
             }
         }
 
         depth = newDepth
-        let d = newDepth
-        order.sort { d[$0] > d[$1] }   // far → near
-        writeIndices()
+        framesSinceSort += 1
+        if framesSinceSort >= 6 || simd_distance_squared(camera, lastSortCamera) > 0.0004 {
+            framesSinceSort = 0
+            lastSortCamera = camera
+            let d = newDepth
+            order.sort { d[$0] > d[$1] }   // far → near
+            writeIndices()
+        }
     }
 
     private func writeIndices() {

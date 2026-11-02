@@ -65,7 +65,14 @@ final class MiniCloud {
 final class ChargedCloudField {
     let entity = Entity()
     var onAbsorb: ((Charge) -> Void)?
+    /// Glass +/− badge (a SwiftUI attachment) for each slot, and a callback telling the UI
+    /// which charge a slot currently shows.
+    var badgeForSlot: ((Int) -> Entity?)?
+    var onSlotChanged: ((Int, Charge?) -> Void)?
+    static let slotCount = 6
     private(set) var isActive = false
+    /// While paused, clouds can't be grabbed.
+    var isFrozen = false
 
     private static let cloudSize: Float = 0.13
 
@@ -107,6 +114,7 @@ final class ChargedCloudField {
         pending.removeAll()
         let leaving = clouds
         clouds.removeAll()
+        for slot in occupied { onSlotChanged?(slot, nil) }
         occupied.removeAll()
         cloud.setHighlighted(false)
         for c in leaving {
@@ -140,7 +148,7 @@ final class ChargedCloudField {
     // MARK: - Gestures
 
     func drag(_ hit: Entity, to worldPosition: SIMD3<Float>, start worldStart: SIMD3<Float>) {
-        guard isActive, let c = cloudRoot(for: hit),
+        guard isActive, !isFrozen, let c = cloudRoot(for: hit),
               var comp = c.components[ChargeComponent.self], !comp.isAbsorbing else { return }
         if !comp.isDragging {
             comp.isDragging = true
@@ -167,7 +175,7 @@ final class ChargedCloudField {
 
     /// Tap alternative.
     func sendToStorm(_ hit: Entity) {
-        guard isActive, let c = cloudRoot(for: hit),
+        guard isActive, !isFrozen, let c = cloudRoot(for: hit),
               let comp = c.components[ChargeComponent.self], !comp.isDragging else { return }
         absorb(c)
     }
@@ -220,6 +228,7 @@ final class ChargedCloudField {
             self.minis[ObjectIdentifier(c)] = nil
             self.clouds.removeAll { $0 === c }
             self.occupied.remove(slot)
+            self.onSlotChanged?(slot, nil)
             guard self.isActive else { return }
             self.onAbsorb?(charge)
             if self.isActive { self.scheduleSpawn(slot: slot, after: 1.2) }
@@ -258,7 +267,16 @@ final class ChargedCloudField {
         let tint: SIMD3<Float> = charge == .positive ? [1.0, 0.86, 0.83] : [0.84, 0.9, 1.0]
         let mini = MiniCloud(size: Self.cloudSize, tint: tint)
         visual.addChild(mini.entity)
-        visual.addChild(makeLabel(for: charge))
+        if let badge = badgeForSlot?(slot) {
+            badge.removeFromParent()
+            badge.position = [0, -0.005, Self.cloudSize * 0.5]
+            badge.scale = .one
+            if !badge.components.has(BillboardComponent.self) {
+                badge.components.set(BillboardComponent())
+            }
+            visual.addChild(badge)
+        }
+        onSlotChanged?(slot, charge)
 
         root.components.set(ChargeComponent(charge: charge, slot: slot, bob: Float.random(in: 0...6.28)))
         root.components.set(InputTargetComponent())
@@ -271,24 +289,5 @@ final class ChargedCloudField {
         minis[ObjectIdentifier(root)] = mini
         occupied.insert(slot)
         visual.move(to: Transform(scale: .one), relativeTo: root, duration: 0.8, timingFunction: .easeOut)
-    }
-
-    private func makeLabel(for charge: Charge) -> Entity {
-        let pivot = Entity()
-        pivot.components.set(BillboardComponent())
-        let mesh = MeshResource.generateText(charge.symbol,
-                                             extrusionDepth: 0.003,
-                                             font: .systemFont(ofSize: 0.06, weight: .heavy),
-                                             containerFrame: .zero,
-                                             alignment: .center,
-                                             lineBreakMode: .byClipping)
-        let color = charge == .positive
-            ? UIColor(red: 0.92, green: 0.16, blue: 0.1, alpha: 1)
-            : UIColor(red: 0.1, green: 0.36, blue: 0.95, alpha: 1)
-        let text = ModelEntity(mesh: mesh, materials: [Materials.unlit(color)])
-        let center = mesh.bounds.center
-        text.position = [-center.x, -center.y, Self.cloudSize * 0.5]
-        pivot.addChild(text)
-        return pivot
     }
 }

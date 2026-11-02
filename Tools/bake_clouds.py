@@ -1,5 +1,20 @@
 #!/usr/bin/env python3
+# Author: MUI group 3
+"""
+Bakes the Blender cloud models into sprite data + textures for RealityKit.
 
+RealityKit cannot render OpenVDB volumes, so the volumetric look is rebuilt from
+soft, camera-facing sprites. This script
+  1. reads the metaball meshes (the source shapes of the VDB volumes) from the USD exports,
+  2. fills them with sprites, bakes self-shadowing / light scattering per sprite,
+  3. pairs every start sprite with an end sprite (optimal assignment) so the app can
+     morph the start cloud organically into the anvil,
+  4. writes cloud_morph.json and the puff / wind / sun textures into ../MUI_Lightning_Group_3/Resources.
+
+Re-run whenever the Blender models change:
+    pip install usd-core trimesh scipy rtree pillow numpy
+    python3 Tools/bake_clouds.py path/to/clouds_mui
+"""
 import json, math, os, sys
 import numpy as np
 import trimesh
@@ -199,14 +214,32 @@ across = np.exp(-(v ** 2) * 5.5)
 wind_a = np.clip(along * across * (0.6 + 0.6 * noise), 0, 1)
 save_pair("wind_streak", np.ones((H, W, 3)), wind_a)
 
-# Sun: bright core, soft glare and faint corona
-S = 256
+# Sun aura: one large, soft glow – no rays. The 3D sun body covers the centre.
+S = 512
 yy, xx = np.mgrid[0:S, 0:S]
 r = np.hypot(xx - S / 2 + 0.5, yy - S / 2 + 0.5) / (S / 2)
-core = np.clip(1 - r / 0.16, 0, 1) ** 0.5
-glare = np.exp(-(r / 0.32) ** 2) * 0.8
-corona = np.exp(-(r / 0.75) ** 2) * 0.28
-sun_a = np.clip(core + glare + corona, 0, 1) * (r < 1)
-warm = np.dstack([np.ones_like(r), 0.93 + 0.07 * core, 0.78 + 0.22 * core])
+corona = np.exp(-(r / 0.12) ** 2) * 0.95          # bright rim right around the body
+glow = np.exp(-(r / 0.3) ** 1.6) * 0.55             # warm inner glow
+haze = np.exp(-(r / 0.62) ** 2) * 0.22              # wide, faint atmosphere
+sun_a = np.clip(corona + glow + haze, 0, 1) * np.clip((1 - r) / 0.25, 0, 1) ** 1.5
+warm = np.dstack([np.ones_like(r), 0.8 + 0.2 * np.exp(-(r / 0.25) ** 2), 0.5 + 0.5 * np.exp(-(r / 0.18) ** 2)])
 save_pair("sun_glow", warm, sun_a)
+# Sun surface (equirectangular, wraps seamlessly around the 3D sun sphere):
+# warm granulation cells with a few brighter patches.
+SW, SH = 512, 256
+lon = np.linspace(0, 2 * np.pi, SW, endpoint=False)[None, :]
+lat = np.linspace(-np.pi / 2, np.pi / 2, SH)[:, None]
+pts = np.stack([np.cos(lat) * np.cos(lon), np.cos(lat) * np.sin(lon), np.sin(lat) * np.ones_like(lon)], -1)
+r = np.random.default_rng(21)
+gran = np.zeros((SH, SW))
+for freq, amp in [(6, 0.5), (13, 0.3), (27, 0.2)]:
+    for _ in range(3):
+        k = r.normal(size=3); k /= np.linalg.norm(k)
+        gran += amp / 3 * np.sin(freq * (pts @ k) + r.uniform(0, 6.28))
+gran = (gran - gran.min()) / np.ptp(gran)
+surface = np.dstack([np.ones_like(gran), 0.55 + 0.38 * gran, 0.1 + 0.42 * gran ** 2])
+surface *= (0.7 + 0.3 * gran)[..., None]
+meta = PngInfo(); meta.add_text("Author", AUTHOR)
+Image.fromarray((np.clip(surface, 0, 1) * 255).astype(np.uint8), "RGB").save(os.path.join(OUT, "sun_surface.png"), pnginfo=meta)
+
 print("written to", os.path.abspath(OUT))

@@ -16,7 +16,7 @@ import simd
 final class RainStreaks {
     let entity = ModelEntity()
 
-    private static let capacity = 900
+    private static let capacity = 2600
     private let mesh: LowLevelMesh
     private var drops: [Drop]
     private var opacityKey: Int32 = -1
@@ -27,6 +27,7 @@ final class RainStreaks {
         var length: Float
         var width: Float
         var phase: Float
+        var age: Float = 0
         var active: Bool
     }
 
@@ -62,7 +63,7 @@ final class RainStreaks {
             }
         }
         mesh.parts.replaceAll([LowLevelMesh.Part(indexCount: n * 6, topology: .triangle,
-                                                 bounds: BoundingBox(min: [-0.8, -0.7, -0.8], max: [0.8, 0.3, 0.8]))])
+                                                 bounds: BoundingBox(min: [-1.0, -0.8, -0.9], max: [1.0, 0.3, 0.9]))])
         entity.model = ModelComponent(mesh: try MeshResource(from: mesh), materials: [CloudAssets.rainMaterial(opacity: 0)])
         entity.isEnabled = false
         drops = (0..<n).map { _ in
@@ -103,6 +104,7 @@ final class RainStreaks {
             d.velocity.x += ((wind.x + turbulence.x) - d.velocity.x) * min(1, 3 * dt)
             d.velocity.z += ((wind.y + turbulence.y) - d.velocity.z) * min(1, 3 * dt)
             d.position += d.velocity * dt
+            d.age += dt
 
             let world = d.position + groundOffset
             if world.y < Terrain.height(world.x, world.z) || d.position.y < lowest - 0.9 {
@@ -125,12 +127,14 @@ final class RainStreaks {
             if Float.random(in: 0...1) < 0.25 + 0.75 * shaft { break }
             source = sources[Int.random(in: 0..<sources.count)]
         }
-        let jitter = SIMD3<Float>(Float.random(in: -0.015...0.015), Float.random(in: -0.02...0), Float.random(in: -0.015...0.015))
+        // Every drop starts at its own height – no flat "emitter plane".
+        let jitter = SIMD3<Float>(Float.random(in: -0.015...0.015), Float.random(in: -0.07...0.05), Float.random(in: -0.015...0.015))
         // Spread new drops over the whole shaft when rain starts, so it doesn't arrive as one sheet.
-        let drop = anywhereInShaft ? Float.random(in: 0...0.35) : Float.random(in: 0...0.02)
+        let drop = anywhereInShaft ? Float.random(in: 0...0.45) : Float.random(in: 0...0.02)
         d.position = source + jitter - SIMD3<Float>(0, drop, 0)
         d.velocity = SIMD3<Float>(wind.x * 0.7, -Float.random(in: 1.3...1.9), wind.y * 0.7)
         d.length = Float.random(in: 0.03...0.06)
+        d.age = 0
         d.width = Float.random(in: 0.0005...0.0009)
         d.active = true
     }
@@ -149,7 +153,8 @@ final class RainStreaks {
                 let speed = simd_length(d.velocity)
                 let direction = speed > 1e-4 ? d.velocity / speed : SIMD3<Float>(0, -1, 0)
                 let head = d.position
-                let tail = head - direction * d.length
+                // Streaks grow in over their first ~0.1 s instead of popping in.
+                let tail = head - direction * (d.length * min(1, 0.15 + d.age * 9))
                 let toCamera = camera - head
                 var side = simd_cross(direction, toCamera)
                 let l = simd_length(side)

@@ -7,42 +7,44 @@
 
 import SwiftUI
 
-/// Always visible, bottom right of the field of view.
-struct StopButtonView: View {
-    let onStop: () -> Void
-
-    var body: some View {
-        // Standard visionOS button on a glass capsule: system material, white label,
-        // gaze highlight and press feedback come for free.
-        Button(action: onStop) {
-            Label("Stop", systemImage: "stop.fill")
-                .font(.title3)
-                .padding(.horizontal, 6)
-        }
-        .buttonBorderShape(.capsule)
-        .controlSize(.large)
-        .help("End the experience")
-        .padding(8)
-        .glassBackgroundEffect(in: Capsule())
-    }
-}
-
-/// Short hint while playing (silent version: the only on-screen guidance).
-struct HintView: View {
+/// Row under the dashboard card: next step / skip intro, pause. When paused: resume, restart, end.
+struct ControlBar: View {
     @Environment(AppModel.self) private var appModel
+    let onEnd: () -> Void
 
     var body: some View {
-        VStack {
-            if appModel.phase == .playing {
-                Label("Drag the + and − clouds into the storm – or tap them", systemImage: "hand.draw")
-                    .font(.headline)
-                    .padding(.horizontal, 22)
-                    .padding(.vertical, 12)
-                    .glassBackgroundEffect()
+        HStack(spacing: 10) {
+            if appModel.isPaused {
+                Button { appModel.resume() } label: {
+                    Label("Resume", systemImage: "play.fill")
+                }
+                Button { appModel.restartExperience() } label: {
+                    Label("Restart", systemImage: "arrow.counterclockwise")
+                }
+                Button(action: onEnd) {
+                    Label("End", systemImage: "xmark")
+                }
+            } else {
+                if appModel.phase == .intro {
+                    Button { appModel.requestNextStep() } label: {
+                        Label("Next step", systemImage: "forward.fill")
+                    }
+                    Button { appModel.director.skipIntro() } label: {
+                        Label("Skip intro", systemImage: "forward.end.fill")
+                    }
+                }
+                Button { appModel.pause() } label: {
+                    Label("Pause", systemImage: "pause.fill")
+                }
             }
         }
-        .frame(width: 800, height: 120, alignment: .bottom)
-        .animation(.easeInOut(duration: 0.3), value: appModel.phase)
+        .font(.title3)
+        .buttonBorderShape(.capsule)
+        .controlSize(.large)
+        .padding(8)
+        .glassBackgroundEffect(in: Capsule())
+        .animation(.easeInOut(duration: 0.25), value: appModel.isPaused)
+        .animation(.easeInOut(duration: 0.25), value: appModel.phase)
     }
 }
 

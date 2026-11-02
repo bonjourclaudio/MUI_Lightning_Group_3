@@ -65,6 +65,7 @@ enum CloudAssets {
     private static let windAlpha = texture("wind_streak_alpha", semantic: .raw)
     private static let sunColor = texture("sun_glow", semantic: .color)
     private static let sunAlpha = texture("sun_glow_alpha", semantic: .raw)
+    private static let sunSurface = texture("sun_surface", semantic: .color)
 
     // MARK: - Materials
 
@@ -80,6 +81,23 @@ enum CloudAssets {
     /// Uses the streak texture: soft tail, brighter head.
     static func rainMaterial(opacity: Float) -> UnlitMaterial {
         spriteMaterial(color: windColor, alpha: windAlpha, tint: [0.8, 0.86, 0.95], opacity: opacity)
+    }
+
+    /// 3D sun body: glowing granulated surface; a little environment lighting keeps it round.
+    static func sunSurfaceMaterial() -> PhysicallyBasedMaterial {
+        var material = PhysicallyBasedMaterial()
+        let warm = UIColor(red: 1, green: 0.82, blue: 0.5, alpha: 1)
+        if let sunSurface {
+            material.baseColor = .init(tint: warm, texture: .init(sunSurface))
+            material.emissiveColor = .init(color: .white, texture: .init(sunSurface))
+        } else {
+            material.baseColor = .init(tint: warm)
+            material.emissiveColor = .init(color: warm)
+        }
+        material.emissiveIntensity = 1.4
+        material.roughness = .init(floatLiteral: 0.55)
+        material.metallic = .init(floatLiteral: 0)
+        return material
     }
 
     static func sunMaterial(tint: SIMD3<Float>, opacity: Float) -> UnlitMaterial {

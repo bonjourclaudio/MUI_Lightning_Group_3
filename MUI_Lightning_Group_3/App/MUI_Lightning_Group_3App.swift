@@ -13,6 +13,8 @@ struct MUI_Lightning_Group_3App: App {
 
     init() {
         ChargeComponent.registerComponent()
+        SunComponent.registerComponent()
+        PlacementComponent.registerComponent()
     }
 
     var body: some Scene {

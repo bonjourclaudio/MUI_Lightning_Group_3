@@ -34,7 +34,8 @@ final class StormCloud {
 
     private struct CoreParticle {
         enum Kind { case positive, negative, droplet }
-        let model: ModelEntity
+        let model: ModelEntity      // translucent glass shell
+        let core: ModelEntity       // glowing core inside
         let kind: Kind
         let index: Int
         let seed: SIMD4<Float>
@@ -49,17 +50,45 @@ final class StormCloud {
     private var flashTime: Float = 0
     private var highlight: Float = 0
     private var highlightTarget: Float = 0
+    private var bump: Float = 0
     private var materialKey: SIMD4<Int32>?
     private var rainSources: [SIMD3<Float>] = []
+    /// Points (model x/z) covering the whole landscape inside an organic, noisy outline –
+    /// rain falls from all of them, not just from under the cloud.
+    /// x, z: position; y: height offset of the rain ceiling there (lower at the edges, uneven).
+    private static let rainArea: [SIMD3<Float>] = {
+        var rng = SeededRandom(seed: 314)
+        var points: [SIMD3<Float>] = []
+        let halfW = Terrain.width * 0.55, halfD = Terrain.depth * 0.6
+        while points.count < 700 {
+            let p = SIMD2<Float>(rng.range(-halfW, halfW), rng.range(-halfD, halfD))
+            let angle = atan2f(p.y, p.x)
+            // Ragged edge: the radius of the rain area wobbles around the outline.
+            let edge = 1 + 0.12 * sinf(angle * 3 + 1) + 0.07 * sinf(angle * 7 + 2) + 0.05 * sinf(angle * 13)
+            let r = simd_length(p / SIMD2<Float>(halfW, halfD))
+            // Denser towards the middle, thinning out at the edge.
+            if r < edge && rng.next() < 1 - 0.6 * ramp(r / edge, from: 0.55, to: 1) {
+                let bumps = 0.05 * (Noise.fbm(p * 6, octaves: 3) - 0.5) * 2
+                let ceiling = -0.16 * (r / edge) * (r / edge) + bumps
+                points.append([p.x, ceiling, p.y])
+            }
+        }
+        return points
+    }()
     private var mistTimer: Float = 1
     private var lastMistRate: Float = -1
     private var lastWind = SIMD2<Float>(repeating: 99)
 
-    private let dropletMaterial = Materials.unlit(UIColor(red: 0.62, green: 0.82, blue: 1, alpha: 1))
-    private let iceMaterial = Materials.unlit(UIColor(white: 0.98, alpha: 1))
-    private let graupelMaterial = Materials.unlit(UIColor(white: 0.8, alpha: 1))
-    private let positiveMaterial = Materials.unlit(UIColor(red: 1, green: 0.32, blue: 0.22, alpha: 1))
-    private let negativeMaterial = Materials.unlit(UIColor(red: 0.22, green: 0.5, blue: 1, alpha: 1))
+    // Hot (+) and cold (−) bubbles: physical, lit glass spheres – shell + glowing core.
+    private static let colors: [String: UIColor] = [
+        "droplet": UIColor(red: 0.62, green: 0.84, blue: 1, alpha: 1),
+        "ice": UIColor(white: 0.97, alpha: 1),
+        "graupel": UIColor(white: 0.82, alpha: 1),
+        "positive": UIColor(red: 1, green: 0.36, blue: 0.24, alpha: 1),
+        "negative": UIColor(red: 0.25, green: 0.55, blue: 1, alpha: 1),
+    ]
+    private let shellMaterials: [String: PhysicallyBasedMaterial] = StormCloud.colors.mapValues { Materials.bubble($0, opacity: 0.42, glow: 0.25) }
+    private let coreMaterials: [String: PhysicallyBasedMaterial] = StormCloud.colors.mapValues { Materials.bubble($0, opacity: 0.9, glow: 0.9) }
 
     init() {
         let data = CloudAssets.morph
@@ -115,19 +144,39 @@ final class StormCloud {
         body.convert(position: [box.center.x, box.min.y + box.size.y * 0.4, box.center.z], to: entity.parent)
     }
 
+    /// Point inside the current cloud bounds (normalised 0…1 per axis), in the parent's
+    /// (landscape model) space – used to pin info labels to cloud parts.
+    func modelPoint(_ normalised: SIMD3<Float>) -> SIMD3<Float> {
+        body.convert(position: box.min + box.size * normalised, to: entity.parent)
+    }
+
+    /// Freezes the mist particles (rain, wind etc. stop because the scene stops updating).
+    func setPaused(_ paused: Bool) {
+        guard var e = mist.components[ParticleEmitterComponent.self] else { return }
+        e.simulationState = paused ? .pause : .play
+        mist.components.set(e)
+    }
+
     func setChargeCounts(positive: Int, negative: Int) {
         shownPositive = min(positive, 24)
         shownNegative = min(negative, 24)
     }
 
     func setHighlighted(_ on: Bool) { highlightTarget = on ? 1 : 0 }
+
+    /// A charged cloud was absorbed: the storm swells for a moment and lights up inside.
+    func absorbFeedback(good: Bool) {
+        bump = good ? 1 : 0.5
+        flashTime = good ? 0.22 : 0.08
+    }
     func flash(duration: Float) { flashTime = duration }
     func setGlow(_ level: Float) { glowLevel = level }
 
     func update(state: AtmosphereState, time: Float, dt: Float, camera: SIMD3<Float>) {
         highlight += (highlightTarget - highlight) * approachFactor(rate: 8, dt: dt)
         bodyScale = 0.95 + 0.12 * state.storm
-        let pulse = 1 + 0.05 * highlight * (0.5 + 0.5 * sinf(time * 8))
+        bump = max(0, bump - dt * 2.2)
+        let pulse = 1 + 0.05 * highlight * (0.5 + 0.5 * sinf(time * 8)) + 0.07 * sinf(Float.pi * bump) * bump
         body.scale = .init(repeating: bodyScale * pulse)
 
         let condense = ramp(state.cloudGrowth, from: 0, to: 0.35)
@@ -205,22 +254,26 @@ final class StormCloud {
         var rng = SeededRandom(seed: 99)
         let mesh = MeshResource.generateSphere(radius: 1)
         func add(_ kind: CoreParticle.Kind, _ index: Int) {
-            let model = ModelEntity(mesh: mesh, materials: [material(for: kind, colored: false)])
+            let key = colorKey(for: kind, colored: false)
+            let model = ModelEntity(mesh: mesh, materials: [shellMaterials[key]!])
+            let core = ModelEntity(mesh: mesh, materials: [coreMaterials[key]!])
+            core.scale = .init(repeating: 0.45)
+            model.addChild(core)
             model.isEnabled = false
-            core.addChild(model)
+            self.core.addChild(model)
             let seed = SIMD4<Float>(rng.next(), rng.next(), rng.next(), rng.next())
-            particles.append(CoreParticle(model: model, kind: kind, index: index, seed: seed))
+            particles.append(CoreParticle(model: model, core: core, kind: kind, index: index, seed: seed))
         }
         for i in 0..<24 { add(.positive, i) }   // small ice crystals
         for i in 0..<24 { add(.negative, i) }   // graupel / hail
         for i in 0..<20 { add(.droplet, i) }    // supercooled droplets
     }
 
-    private func material(for kind: CoreParticle.Kind, colored: Bool) -> UnlitMaterial {
+    private func colorKey(for kind: CoreParticle.Kind, colored: Bool) -> String {
         switch kind {
-        case .positive: return colored ? positiveMaterial : iceMaterial
-        case .negative: return colored ? negativeMaterial : graupelMaterial
-        case .droplet: return dropletMaterial
+        case .positive: return colored ? "positive" : "ice"
+        case .negative: return colored ? "negative" : "graupel"
+        case .droplet: return "droplet"
         }
     }
 
@@ -228,7 +281,11 @@ final class StormCloud {
         let colored = state.separation > 0.25
         if colored != particlesColored {
             particlesColored = colored
-            for p in particles { p.model.model?.materials = [material(for: p.kind, colored: colored)] }
+            for p in particles {
+                let key = colorKey(for: p.kind, colored: colored)
+                p.model.model?.materials = [shellMaterials[key]!]
+                p.core.model?.materials = [coreMaterials[key]!]
+            }
         }
 
         // Positions are relative to the current cloud bounds, so they follow the morph.
@@ -270,7 +327,7 @@ final class StormCloud {
                 break
             }
 
-            let particleSize: Float = p.kind == .negative ? 0.009 : (p.kind == .positive ? 0.007 : 0.0045)
+            let particleSize: Float = p.kind == .negative ? 0.012 : (p.kind == .positive ? 0.0095 : 0.006)
             let v = p.visibility * state.interior
             p.model.isEnabled = v > 0.01
             p.model.position = position
@@ -306,17 +363,13 @@ final class StormCloud {
         return e
     }
 
-    /// Points on the underside of the cloud (entity space) – rain falls from the real cloud base,
-    /// not from a rectangle.
+    /// Rain sources in entity space: the whole landscape area, at the height of the cloud base.
     private func collectRainSources() {
         rainSources.removeAll(keepingCapacity: true)
-        let limit = box.min.y + box.size.y * 0.22
-        let scale = body.scale.x
-        for s in sprites where s.radius > 0.004 && s.position.y < limit {
-            rainSources.append(SIMD3<Float>(s.position.x, s.position.y - s.radius * 0.4, s.position.z) * scale)
-        }
-        if rainSources.isEmpty {
-            rainSources.append(SIMD3<Float>(box.center.x, box.min.y, box.center.z) * scale)
+        let height = (box.min.y + 0.01) * body.scale.x
+        let origin = entity.position
+        for p in Self.rainArea {
+            rainSources.append(SIMD3<Float>(p.x - origin.x, height + p.y, p.z - origin.z))
         }
     }
 
@@ -353,7 +406,7 @@ final class StormCloud {
             e.emitterShapeSize = [extent.x * 0.4, 0.015, extent.z * 0.4]
             e.emissionDirection = simd_normalize(SIMD3<Float>(wind.x * 1.5, -1, wind.y * 1.5))
             e.mainEmitter.acceleration = [wind.x * 0.8, -0.25, wind.y * 0.8]
-            e.mainEmitter.birthRate = (rate * 70).rounded()
+            e.mainEmitter.birthRate = (rate * 160).rounded()
             e.isEmitting = rate > 0.05
             mist.components.set(e)
         }
